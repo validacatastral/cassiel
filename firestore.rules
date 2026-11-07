@@ -1,10 +1,15 @@
 rules_version = '2';
+// ValidaCatastral ©diegocampos — Reglas de Firestore (lanzamiento, sep-2026)
+// OJO: la copia del repo es solo respaldo. La que protege es la PUBLICADA en la
+// consola de Firebase (Firestore -> Reglas). Publicar SIEMPRE despues de subir.
 service cloud.firestore {
   match /databases/{database}/documents {
+
     // ---------- Helpers ----------
     function isSignedIn() {
       return request.auth != null;
     }
+    // Staff = cuentas del panel (ficha en /usuarios).
     function isStaff() {
       return isSignedIn()
         && exists(/databases/$(database)/documents/usuarios/$(request.auth.uid));
@@ -13,68 +18,144 @@ service cloud.firestore {
       return isSignedIn()
         && get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.role == 'admin';
     }
+    // Equipo = la cuenta compartida de revisores. Se habilita creando el
+    // documento /revisores/{uid} (desde el panel o la consola). Nunca se usa
+    // "cualquier usuario no anonimo": cualquiera puede crearse una cuenta.
+    function isTeam() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/revisores/$(request.auth.uid));
+    }
+    function isMember() {
+      return isTeam() || isStaff();
+    }
+    function strMax(d, k, n) {
+      return !(k in d) || (d[k] is string && d[k].size() <= n);
+    }
+
     // ---------- config ----------
+    // config/portada es lo UNICO legible sin ingresar: solo totales y
+    // switches de la portada (sin datos de predios ni de personas).
     match /config/{docId} {
-      allow read: if true;
+      allow read: if docId == 'portada' || isMember();
       allow write: if isAdmin();
     }
+
+    // ---------- stats (avance por distrito/validador, lo calcula el panel) ----------
+    match /stats/{docId} {
+      allow read: if isMember();
+      allow write: if isStaff();
+    }
+
     // ---------- excelFiles + chunks ----------
     match /excelFiles/{fileId} {
-      allow read: if true;
+      allow read: if isMember();
       allow write: if isStaff();
       match /chunks/{chunkId} {
-        allow read: if true;
+        allow read: if isMember();
         allow write: if isStaff();
       }
     }
-    // ---------- reviews (ENDURECIDO) ----------
-    // Cualquier sesion (incluida anonima) puede escribir, pero SOLO
-    // documentos con la forma exacta esperada y tamanos acotados.
+
+    // ---------- reviews ----------
+    // Staff: libre (el panel marca, copia comentarios al subir versiones y pone
+    // avisos "cambio" / "reaparecio"). Equipo: solo la forma exacta.
     match /reviews/{reviewKey} {
-      allow read: if true;
-      allow create, update: if isSignedIn()
-        // Solo los campos que usa la app, ninguno extra:
-        && request.resource.data.keys().hasOnly(
-             ['done', 'doneDate', 'doneBy', 'comment', 'commentDate', 'tipo', 'type', 'distrito'])
-        // Tipos y limites (cada campo es opcional, pero si viene debe ser valido):
-        && (!('done' in request.resource.data)
-             || request.resource.data.done is bool)
-        && (!('comment' in request.resource.data)
-             || (request.resource.data.comment is string
-                 && request.resource.data.comment.size() <= 1000))
-        && (!('doneBy' in request.resource.data)
-             || (request.resource.data.doneBy is string
-                 && request.resource.data.doneBy.size() <= 100))
-        && (!('distrito' in request.resource.data)
-             || (request.resource.data.distrito is string
-                 && request.resource.data.distrito.size() <= 100))
-        && (!('tipo' in request.resource.data)
-             || (request.resource.data.tipo is string
-                 && request.resource.data.tipo.size() <= 100))
-        && (!('type' in request.resource.data)
-             || (request.resource.data.type is string
-                 && request.resource.data.type.size() <= 100));
-      // Borrar una review solo lo puede hacer el staff:
+      allow read: if isMember();
+      allow create, update: if isStaff() || (isTeam() && validReview());
       allow delete: if isStaff();
     }
-    // ---------- presence (ENDURECIDO) ----------
+    function validReview() {
+      let d = request.resource.data;
+      let old = resource == null ? {} : resource.data;
+      return d.keys().hasOnly(['estado', 'comment', 'commentDate', 'at', 'distrito',
+                               'validador', 'crc', 'ses', 'flag', 'prevComment'])
+        && d.estado in ['falta', 'proceso', 'corregido', 'noaplica']
+        && d.at == request.time
+        && strMax(d, 'comment', 1000)
+        && strMax(d, 'distrito', 100)
+        && strMax(d, 'validador', 80)
+        && strMax(d, 'crc', 40)
+        && strMax(d, 'ses', 12)
+        // commentDate: o no viene, o no cambia, o es la hora del servidor.
+        && (!('commentDate' in d)
+            || d.commentDate == request.time
+            || d.commentDate == old.get('commentDate', null))
+        // flag / prevComment los pone el panel; el equipo solo puede dejarlos
+        // igual o limpiar el aviso.
+        && (!('flag' in d) || d.flag == '' || d.flag == old.get('flag', null))
+        && (!('prevComment' in d) || d.prevComment == old.get('prevComment', null));
+    }
+
+    // ---------- presence (quien esta conectado; solo lo lee el panel) ----------
     match /presence/{presenceId} {
-      allow read: if true;
-      allow create, update: if isSignedIn()
+      allow read: if isStaff();
+      allow create, update: if isMember()
         && request.resource.data.keys().hasOnly(['type', 'user', 'ts'])
         && request.resource.data.type is string
         && request.resource.data.type.size() <= 30
-        && (!('user' in request.resource.data)
-             || (request.resource.data.user is string
-                 && request.resource.data.user.size() <= 100));
-      allow delete: if isSignedIn();
+        && strMax(request.resource.data, 'user', 100);
+      allow delete: if isMember();
     }
+
+    // ---------- accesos (registro de ingreso; solo lo ve el admin) ----------
+    // El revisor se identifica con usuario "nombre.apellido" y/o DNI, segun el
+    // modo que elija el admin (config/portada.ident). Las reglas aceptan los dos
+    // formatos para poder cambiar de modo sin volver a publicar.
+    // El staff que entra desde la vista publica ("Entrar como admin") deja admin:true.
+    match /accesos/{accesoId} {
+      allow create: if (isStaff() && validAcceso() && request.resource.data.get('admin', false) == true)
+        || (isTeam() && validAcceso() && !('admin' in request.resource.data)
+            && (!('usuario' in request.resource.data)
+                || request.resource.data.usuario.matches('^[a-z]{2,}([.][a-z]+){1,2}$')));
+      allow read, delete: if isAdmin();
+      allow update: if false;
+    }
+    function validAcceso() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['usuario', 'dni', 'admin', 'at', 'ses'])
+        && ('usuario' in d || 'dni' in d)
+        && (!('usuario' in d) || (d.usuario is string && d.usuario.size() <= 40
+              && d.usuario.matches('^[a-z0-9.]{2,40}$')))
+        && (!('dni' in d) || (d.dni is string && d.dni.matches('^[0-9]{8}$')))
+        && d.at == request.time
+        && strMax(d, 'ses', 12);
+    }
+
+    // ---------- avance (totales por distrito + validador; los escribe la vista al marcar) ----------
+    // Lo lee la pagina ?avance SIN ingresar, salvo que el admin la apague
+    // (config/portada.avancePublico == false). Solo numeros: sin predios ni personas.
+    match /avance/{avId} {
+      allow read: if isMember()
+        || get(/databases/$(database)/documents/config/portada).data.get('avancePublico', true) != false;
+      allow create, update: if isMember() && validAvance();
+      allow delete: if isStaff();
+    }
+    function validAvance() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['d', 'v', 't', 'c', 'p', 'n', 'at'])
+        && d.d is string && d.d.size() <= 100
+        && d.v is string && d.v.size() <= 80
+        && d.t is int && d.t >= 0 && d.t <= 200000
+        && d.c is int && d.p is int && d.n is int
+        && d.c >= 0 && d.p >= 0 && d.n >= 0
+        && d.c + d.p + d.n <= d.t
+        && d.at == request.time;
+    }
+
+    // ---------- revisores (cuentas habilitadas como "equipo") ----------
+    match /revisores/{uid} {
+      allow get: if isSignedIn() && (request.auth.uid == uid || isStaff());
+      allow list: if isStaff();
+      allow write: if isAdmin();
+    }
+
     // ---------- usuarios ----------
     match /usuarios/{uid} {
       allow get: if isSignedIn() && (request.auth.uid == uid || isStaff());
       allow list: if isStaff();
       allow write: if isAdmin();
     }
+
     // ---------- historial ----------
     // El log NO es editable (update: false) para conservar su valor de
     // auditoria. Solo un admin puede borrar entradas (limpieza).
@@ -84,12 +165,13 @@ service cloud.firestore {
       allow update: if false;
       allow delete: if isAdmin();
     }
+
     // ---------- htmlFiles ----------
     match /htmlFiles/{fileId} {
       allow read, write: if isStaff();
     }
+
     // ---------- adminNotes (nota personal de cada usuario registrado) ----------
-    // Cada staff lee/escribe SOLO la suya; el admin (maestro) puede leer las de todos.
     match /adminNotes/{uid} {
       allow read:   if isStaff() && (request.auth.uid == uid || isAdmin());
       allow delete: if isStaff() && request.auth.uid == uid;
@@ -99,7 +181,8 @@ service cloud.firestore {
         && request.resource.data.text is string
         && request.resource.data.text.size() <= 20000;
     }
-    // ---------- sharedNotes/general (tablon del equipo: admin publica, staff lee) ----------
+
+    // ---------- sharedNotes/general (tablon del equipo) ----------
     match /sharedNotes/general {
       allow read:  if isStaff();
       allow write: if isAdmin()
@@ -107,22 +190,7 @@ service cloud.firestore {
         && request.resource.data.text is string
         && request.resource.data.text.size() <= 20000;
     }
-    // ---------- marcas_vias (visor de vias: atencion de cada registro) ----------
-    // Lectura publica. Cualquier sesion (incluida anonima) marca, pero solo
-    // con la forma exacta y tamanos acotados. Borrar: solo el staff.
-    match /marcas_vias/{k} {
-      allow read: if true;
-      allow create, update: if isSignedIn()
-        && k.size() <= 320
-        && request.resource.data.keys().hasOnly(['estado', 'obs', 'revisor', 'fecha', 'pol', 'crc'])
-        && request.resource.data.estado in ['pendiente', 'atendido', 'falso_error']
-        && request.resource.data.obs is string && request.resource.data.obs.size() <= 1000
-        && request.resource.data.revisor is string && request.resource.data.revisor.size() <= 60
-        && request.resource.data.fecha is string && request.resource.data.fecha.size() <= 40
-        && request.resource.data.pol is string && request.resource.data.pol.size() <= 20
-        && request.resource.data.crc is string && request.resource.data.crc.size() <= 40;
-      allow delete: if isStaff();
-    }
+
     // ---------- todo lo demas: denegado ----------
     match /{document=**} {
       allow read, write: if false;

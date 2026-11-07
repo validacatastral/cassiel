@@ -585,7 +585,7 @@ html[data-atheme="claudelight"] .stat-card,html[data-atheme="claudelight"] .pane
 <div id="toast"></div>
 <script type="module">
 import{initializeApp,deleteApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import{getFirestore,collection,addDoc,deleteDoc,doc,onSnapshot,query,orderBy,setDoc,getDocs,getDoc,updateDoc}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import{getFirestore,collection,addDoc,deleteDoc,doc,onSnapshot,query,orderBy,setDoc,getDocs,getDoc,updateDoc,serverTimestamp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import{getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged,createUserWithEmailAndPassword}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import{initializeAppCheck,ReCaptchaV3Provider}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app-check.js";
 const fCfg={apiKey:"AIzaSyBrTT-bK_UTZLSg6BVMiVviIQmAYFbGo9Q",authDomain:"dataforge-mio.firebaseapp.com",projectId:"dataforge-mio",storageBucket:"dataforge-mio.firebasestorage.app",messagingSenderId:"687282166437",appId:"1:687282166437:web:83772a6d56c52185784b4c"};
@@ -838,6 +838,89 @@ window.purgeLogins=async function(){
   catch(e){toast(e.code==='permission-denied'?'Publica las reglas nuevas de Firestore para habilitar el borrado':'Error tras '+okN+': '+e.message,'var(--accent-red)');}
 };
 
+/*VCX-START*/
+/* ===== Huella de fila: MISMA que la vista pública (index.html). No cambiar una sin la otra. ===== */
+function vcNorm(s){return String(s==null?'':s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,' ').trim();}
+function vcSan(s){return String(s==null?'':s).replace(/[^a-zA-Z0-9_-]/g,'');}
+function vcFnv(s,seed){var h=seed>>>0;for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
+function vcHex8(n){var x=(n>>>0).toString(16);while(x.length<8)x='0'+x;return x;}
+var VC_LOC={'sector':1,'manzana':1,'lote':1,'edifica':1,'edificacion':1,'entrada':1,'piso':1,'unidad':1};
+function vcRole(n){
+  if(n==='crc'||n==='codigo de referencia catastral')return 'id';
+  if(n==='codigo del lote')return 'id';
+  if(VC_LOC[n])return 'loc';
+  if(n==='nivel')return 'nivel';
+  if(n==='estado')return 'tipo';
+  if(n==='reglas'||n==='regla')return 'reglas';
+  if(n==='observaciones'||n==='observacion')return 'obs';
+  if(n==='grupo')return 'grupo';
+  if(n==='rep'||n==='rep.')return 'rep';
+  return 'var';
+}
+var VC_EXCL={tipo:1,reglas:1,obs:1,nivel:1,grupo:1,rep:1};
+function vcKeys(dist,val,headers,raw){
+  var hs=(Array.isArray(headers)&&headers.length)?headers.slice():Object.keys((raw&&raw[0])||{});
+  hs=hs.filter(function(h){return String(h).charAt(0)!=='_';});
+  var cols=hs.map(function(h){var n=vcNorm(h);return{h:h,n:n,role:vcRole(n)};});
+  var idc=cols.filter(function(c){return c.role==='id';})[0];
+  if(!idc&&cols.length){idc=cols[0];idc.role='id';}
+  cols.forEach(function(c){if(c.role==='id'&&c!==idc)c.role='var';});
+  var tipoC=cols.filter(function(c){return c.role==='tipo';})[0],regC=cols.filter(function(c){return c.role==='reglas';})[0];
+  var pre=vcSan(dist)+'_'+vcSan(val)+'__',seen={},out=[];
+  raw.forEach(function(r){
+    if(tipoC&&vcNorm(r[tipoC.h])==='conforme')return;
+    var idv=idc?String(r[idc.h]==null?'':r[idc.h]).trim():'',h2;
+    if(r._h)h2=String(r._h);
+    else{var p=[];for(var i=0;i<cols.length;i++){var c=cols[i];if(VC_EXCL[c.role])continue;var v=r[c.h];p.push(v==null?'':String(v).trim());}
+      var s=p.join('␟');seen[s]=(seen[s]||0)+1;var s2=s+'#'+seen[s];h2=vcHex8(vcFnv(s2,2166136261))+vcHex8(vcFnv(s2,0x9747b28c));}
+    out.push({key:pre+vcSan(idv).slice(0,30)+'_'+vcSan(h2).slice(0,24),id:idv,rule:regC?String(r[regC.h]==null?'':r[regC.h]).trim():''});
+  });
+  return out;
+}
+/* Cruce de una versión nueva contra la anterior (mismo distrito + validador).
+   Devuelve el resumen y las escrituras a `reviews`; no escribe nada. */
+function vcCruceCalc(oldList,newList,reviews,dist,val){
+  var oldBy={},newBy={},oldById={},base={distrito:dist,validador:val};
+  oldList.forEach(function(e){oldBy[e.key]=e;});newList.forEach(function(e){newBy[e.key]=e;});
+  oldList.forEach(function(e){if(!newBy[e.key])(oldById[e.id]=oldById[e.id]||[]).push(e);});
+  var sum={res:0,conf:0,nue:0,igual:0,reap:0,cam:0,naRegla:0},acts=[];
+  function act(key,id,extra){acts.push({k:key,d:Object.assign({estado:'falta',crc:String(id).slice(0,40)},base,extra)});}
+  newList.forEach(function(e){
+    var rv=reviews[e.key];
+    if(oldBy[e.key]){
+      if(rv&&rv.estado==='corregido'){sum.reap++;act(e.key,e.id,{flag:'reaparecio'});}
+      else if(rv&&rv.estado==='noaplica'&&oldBy[e.key].rule!==e.rule){sum.naRegla++;act(e.key,e.id,{flag:'cambio'});}
+      else sum.igual++;
+      return;}
+    var cl=oldById[e.id]||[],ci=0;for(var q=0;q<cl.length;q++){var o2=reviews[cl[q].key];if(o2&&((o2.estado&&o2.estado!=='falta')||(o2.comment&&String(o2.comment).trim()))){ci=q;break;}}
+    var cand=cl.splice(ci,1)[0];
+    if(cand){sum.cam++;var o=reviews[cand.key];
+      if(o&&((o.estado&&o.estado!=='falta')||(o.comment&&String(o.comment).trim()))){var x={flag:'cambio'},pc=o.comment?String(o.comment).trim().slice(0,1000):'';if(pc)x.prevComment=pc;act(e.key,e.id,x);}
+      return;}
+    sum.nue++;});
+  Object.keys(oldById).forEach(function(id){oldById[id].forEach(function(e){sum.res++;var r=reviews[e.key];if(r&&r.estado==='corregido')sum.conf++;});});
+  return{sum:sum,acts:acts};
+}
+async function vcCruce(dist,type,headers,json){
+  var prev=S.excelFiles.filter(function(f){return f.distrito===dist&&(f.validador||f.type)===type;}).sort(function(a,b){return String(b.date||'').localeCompare(String(a.date||''));})[0];
+  if(!prev)return null;
+  var oldRows=await loadRowsFor(prev);
+  var r=vcCruceCalc(vcKeys(dist,type,prev.headers||Object.keys(oldRows[0]||{}),oldRows),vcKeys(dist,type,headers,json),S.reviews,dist,type);
+  r.prev=prev;return r;
+}
+function vcCruceMsg(dist,type,n,r){var s=r.sum;
+  return 'Ya hay una versión anterior de '+type+' ('+dist+'): '+(r.prev.name||'')+'.\n\nCruce con la nueva ('+n+' filas):\n'
+   +'• Resueltas (ya no salen): '+s.res+(s.conf?' ('+s.conf+' estaban en Corregido: confirmadas)':'')+'\n'
+   +'• Nuevas: '+s.nue+'\n'
+   +'• Sin cambios (conservan su estado): '+s.igual+'\n'
+   +'• Reaparecidas (estaban Corregido y siguen saliendo): '+s.reap+' → vuelven a Falta con aviso\n'
+   +'• Cambiadas (mismo CRC, otros valores): '+s.cam+' → Falta; con aviso las que ya tenían revisión o comentario\n'
+   +'• «No aplica» que vuelven a Falta (cambió la regla): '+s.naRegla+'\n\n¿Subir la nueva versión?';}
+async function vcCruceApply(acts){var n=0;for(var i=0;i<acts.length;i++){var a=acts[i];
+  try{await setDoc(doc(db,'reviews',a.k),Object.assign({at:serverTimestamp()},a.d),{merge:true});n++;}catch(e){console.warn('cruce',e);}
+  if(i%20===0)setSt('loading','Aplicando cruce '+(i+1)+'/'+acts.length+'...');}
+  return n;}
+/*VCX-END*/
 window.uploadExcel=function(e){
   var dist=document.getElementById('excelDistrito').value,type=document.getElementById('excelType').value;
   if(!dist||!type){toast('Selecciona distrito y categoria','var(--accent-amber)');e.target.value='';return;}
@@ -849,14 +932,17 @@ window.uploadExcel=function(e){
       var ws=wb.Sheets[wb.SheetNames[0]];
       var json=XLSX.utils.sheet_to_json(ws,{defval:''});
       if(!json.length){setSt('err','Archivo vacio');return;}
+      var cr=null;try{cr=await vcCruce(dist,type,Object.keys(json[0]),json);}catch(ce){console.warn('cruce',ce);cr=null;}
+      if(cr&&!confirm(vcCruceMsg(dist,type,json.length,cr))){setSt('err','Subida cancelada');return;}
       var chunks=[],cur=[],sz=0;
       json.forEach(function(row){var s=JSON.stringify(row).length;if(cur.length&&(sz+s>700000||cur.length>=400)){chunks.push(cur);cur=[];sz=0;}cur.push(row);sz+=s;});
       if(cur.length)chunks.push(cur);
       var descEl=document.getElementById('excelDesc');var desc=descEl?descEl.value.trim().slice(0,200):'';
       var ref=await addDoc(collection(db,'excelFiles'),{name:file.name,type:type,distrito:dist,date:new Date().toISOString(),size:(file.size/1024).toFixed(1)+'KB',headers:Object.keys(json[0]),rowCount:json.length,chunked:true,chunkCount:chunks.length,uploadedBy:CU,description:desc});
       for(var i=0;i<chunks.length;i++){setSt('loading','Subiendo '+file.name+' ('+(i+1)+'/'+chunks.length+')...');await setDoc(doc(db,'excelFiles',ref.id,'chunks','c'+String(i).padStart(4,'0')),{i:i,rows:chunks[i]});}
-      logH('EXCEL_UPLOAD','Subio: '+file.name+' ('+dist+'/'+type+') '+json.length+' filas');
-      setSt('ok',file.name+' OK '+json.length+' filas');toast('Publicado: '+file.name,'var(--accent-green)');
+      var cOk=0;if(cr&&cr.acts.length)cOk=await vcCruceApply(cr.acts);
+      logH('EXCEL_UPLOAD','Subio: '+file.name+' ('+dist+'/'+type+') '+json.length+' filas'+(cr?(' · cruce: '+cr.sum.res+' resueltas, '+cr.sum.nue+' nuevas, '+cr.sum.reap+' reaparecidas, '+cr.sum.cam+' cambiadas'):''));
+      setSt('ok',file.name+' OK '+json.length+' filas'+(cr?(' · cruce aplicado ('+cOk+' avisos)'):''));toast('Publicado: '+file.name+(cr?' · '+cr.sum.res+' resueltas, '+cr.sum.nue+' nuevas, '+cr.acts.length+' avisos':''),'var(--accent-green)');
     }catch(err){setSt('err','Error: '+err.message);}};
     r.readAsArrayBuffer(file);
   });e.target.value='';
@@ -874,23 +960,23 @@ window.delExcel=async function(id,name){if(!confirm('Eliminar '+name+'?'))return
   var orphanKeys=[];
   if(f){try{
     var myRows=await loadRowsFor(f);var tk=(f.distrito||'')+'_'+(f.type||'');var hdr=f.headers||(myRows[0]?Object.keys(myRows[0]):[]);
-    var mine=new Set();myRows.forEach(function(r){mine.add(makeKey(tk,r,hdr));});
+    var mine=new Set();myRows.forEach(function(r){mine.add(makeKey(tk,r,hdr));});vcKeys(f.distrito||'',f.type||'',hdr,myRows).forEach(function(e){mine.add(e.key);});
     var others=new Set();var sibs=S.excelFiles.filter(function(x){return x.fireId!==id&&x.distrito===f.distrito&&x.type===f.type;});
-    for(const s of sibs){var sr=await loadRowsFor(s);var sh=s.headers||(sr[0]?Object.keys(sr[0]):[]);sr.forEach(function(r){others.add(makeKey(tk,r,sh));});}
+    for(const s of sibs){var sr=await loadRowsFor(s);var sh=s.headers||(sr[0]?Object.keys(sr[0]):[]);sr.forEach(function(r){others.add(makeKey(tk,r,sh));});vcKeys(s.distrito||'',s.type||'',sh,sr).forEach(function(e){others.add(e.key);});}
     mine.forEach(function(k){if(!others.has(k)&&S.reviews[k])orphanKeys.push(k);});
   }catch(e){orphanKeys=[];}}
   var sn2=await getDocs(collection(db,'excelFiles',id,'chunks'));for(const d2 of sn2.docs){await deleteDoc(d2.ref);}await deleteDoc(doc(db,'excelFiles',id));
   var rOk=0;for(const k of orphanKeys){try{await deleteDoc(doc(db,'reviews',k));rOk++;}catch(e){}}
   logH('EXCEL_DELETE','Elimino: '+name+(rOk?(' (+'+rOk+' revisiones)'):''));toast('Eliminado'+(rOk?(' (+'+rOk+' revisiones)'):''),'var(--accent-amber)');
 }catch(e){toast('Error: '+e.message,'var(--accent-red)');}};
-async function vcBuildValidKeys(){var valid={},failed={};for(const f of S.excelFiles){var grp=(f.distrito||'Sin Distrito')+'|||'+(f.type||'Sin Categoria');if(!valid[grp])valid[grp]=new Set();try{var rows=await loadRowsFor(f);var hdr=f.headers||(rows[0]?Object.keys(rows[0]):[]);var tk=(f.distrito||'')+'_'+(f.type||'');rows.forEach(function(r){valid[grp].add(makeKey(tk,r,hdr));});}catch(e){failed[grp]=true;}}return{valid:valid,failed:failed};}
+async function vcBuildValidKeys(){var valid={},failed={};for(const f of S.excelFiles){var grp=(f.distrito||'Sin Distrito')+'|||'+(f.type||'Sin Categoria');if(!valid[grp])valid[grp]=new Set();try{var rows=await loadRowsFor(f);var hdr=f.headers||(rows[0]?Object.keys(rows[0]):[]);var tk=(f.distrito||'')+'_'+(f.type||'');rows.forEach(function(r){valid[grp].add(makeKey(tk,r,hdr));});vcKeys(f.distrito||'',f.type||'',hdr,rows).forEach(function(e){valid[grp].add(e.key);});}catch(e){failed[grp]=true;}}return{valid:valid,failed:failed};}
 window.cleanOrphanReviews=async function(){
   if(CR!=='admin'){toast('Solo el admin puede limpiar','var(--accent-red)');return;}
   if(!Object.keys(S.reviews).length){toast('No hay revisiones que revisar','var(--accent-blue)');return;}
   toast('Analizando filas vigentes...','var(--accent-blue)');
   var res;try{res=await vcBuildValidKeys();}catch(e){toast('Error al leer filas: '+e.message,'var(--accent-red)');return;}
   var valid=res.valid,failed=res.failed,orphans=[];
-  Object.keys(S.reviews).forEach(function(rk){var rev=S.reviews[rk];var grp=(rev.distrito||'Sin Distrito')+'|||'+(rev.tipo||rev.type||'Sin Categoria');if(failed[grp])return;var set=valid[grp];if(!set){orphans.push(rk);return;}if(!set.has(rk))orphans.push(rk);});
+  Object.keys(S.reviews).forEach(function(rk){var rev=S.reviews[rk];var grp=(rev.distrito||'Sin Distrito')+'|||'+(rev.validador||rev.tipo||rev.type||'Sin Categoria');if(failed[grp])return;var set=valid[grp];if(!set){orphans.push(rk);return;}if(!set.has(rk))orphans.push(rk);});
   if(!orphans.length){toast('No hay revisiones hu\u00e9rfanas \u2014 todo limpio','var(--accent-green)');return;}
   var nFail=Object.keys(failed).length;
   var msg='Se encontraron '+orphans.length+' revisi\u00f3n(es) hu\u00e9rfana(s): no corresponden a ninguna fila vigente (sobran de archivos viejos o reemplazados).\n\nSe borrar\u00e1n de forma PERMANENTE. Esto corrige los porcentajes inflados.';

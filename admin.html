@@ -705,6 +705,7 @@ function startListeners(){
   onSnapshot(collection(db,'usuarios'),function(sn){S.dbUsers={};sn.forEach(function(d){S.dbUsers[d.id]=d.data();});renderUsers();});
   onSnapshot(query(collection(db,'excelFiles'),orderBy('date','desc')),function(sn){S.excelFiles=[];sn.forEach(function(d){S.excelFiles.push(Object.assign({},d.data(),{fireId:d.id}));});updateUI();if(S.curType)ensureCurRows();});
   onSnapshot(query(collection(db,'htmlFiles'),orderBy('date','desc')),function(sn){S.htmlFiles=[];sn.forEach(function(d){S.htmlFiles.push(Object.assign({},d.data(),{fireId:d.id}));});renderHtmlList();document.getElementById('badge-html').textContent=S.htmlFiles.length;document.getElementById('html-count').textContent=S.htmlFiles.length;});
+  onSnapshot(collection(db,'avance'),function(sn){S.avance={};sn.forEach(function(d){S.avance[d.id]=d.data();});updateProgress();},function(e){console.warn('avance',e);});
   onSnapshot(collection(db,'reviews'),function(sn){S.reviews={};sn.forEach(function(d){S.reviews[d.id]=d.data();});updateProgress();renderComments();if(S.curType)renderAdminTable();});
   if(CR==='admin')onSnapshot(query(collection(db,'historial'),orderBy('date','desc')),function(sn){S.historial=[];sn.forEach(function(d){S.historial.push(Object.assign({},d.data(),{fireId:d.id}));});renderHistorial();renderMatrix();});
   setupNotes();
@@ -916,6 +917,11 @@ function vcCruceMsg(dist,type,n,r){var s=r.sum;
    +'• Reaparecidas (estaban Corregido y siguen saliendo): '+s.reap+' → vuelven a Falta con aviso\n'
    +'• Cambiadas (mismo CRC, otros valores): '+s.cam+' → Falta; con aviso las que ya tenían revisión o comentario\n'
    +'• «No aplica» que vuelven a Falta (cambió la regla): '+s.naRegla+'\n\n¿Subir la nueva versión?';}
+async function vcAvanceWrite(dist,type,list,acts){
+  var ov={};(acts||[]).forEach(function(a){ov[a.k]=a.d.estado;});var c=0,p=0,n=0;
+  list.forEach(function(e){var rv=S.reviews[e.key],st=ov[e.key]||(rv&&rv.estado);if(st==='corregido')c++;else if(st==='proceso')p++;else if(st==='noaplica')n++;});
+  try{await setDoc(doc(db,'avance',vcSan(dist)+'__'+vcSan(type)),{d:dist,v:type,t:list.length,c:c,p:p,n:n,at:serverTimestamp()});}catch(e){console.warn('avance',e);}
+}
 async function vcCruceApply(acts){var n=0;for(var i=0;i<acts.length;i++){var a=acts[i];
   try{await setDoc(doc(db,'reviews',a.k),Object.assign({at:serverTimestamp()},a.d),{merge:true});n++;}catch(e){console.warn('cruce',e);}
   if(i%20===0)setSt('loading','Aplicando cruce '+(i+1)+'/'+acts.length+'...');}
@@ -941,6 +947,7 @@ window.uploadExcel=function(e){
       var ref=await addDoc(collection(db,'excelFiles'),{name:file.name,type:type,distrito:dist,date:new Date().toISOString(),size:(file.size/1024).toFixed(1)+'KB',headers:Object.keys(json[0]),rowCount:json.length,chunked:true,chunkCount:chunks.length,uploadedBy:CU,description:desc});
       for(var i=0;i<chunks.length;i++){setSt('loading','Subiendo '+file.name+' ('+(i+1)+'/'+chunks.length+')...');await setDoc(doc(db,'excelFiles',ref.id,'chunks','c'+String(i).padStart(4,'0')),{i:i,rows:chunks[i]});}
       var cOk=0;if(cr&&cr.acts.length)cOk=await vcCruceApply(cr.acts);
+      await vcAvanceWrite(dist,type,vcKeys(dist,type,Object.keys(json[0]),json),cr?cr.acts:null);
       logH('EXCEL_UPLOAD','Subio: '+file.name+' ('+dist+'/'+type+') '+json.length+' filas'+(cr?(' · cruce: '+cr.sum.res+' resueltas, '+cr.sum.nue+' nuevas, '+cr.sum.reap+' reaparecidas, '+cr.sum.cam+' cambiadas'):''));
       setSt('ok',file.name+' OK '+json.length+' filas'+(cr?(' · cruce aplicado ('+cOk+' avisos)'):''));toast('Publicado: '+file.name+(cr?' · '+cr.sum.res+' resueltas, '+cr.sum.nue+' nuevas, '+cr.acts.length+' avisos':''),'var(--accent-green)');
     }catch(err){setSt('err','Error: '+err.message);}};
@@ -1112,17 +1119,27 @@ window.downloadAdmin=function(){
   XLSX.writeFile(wb,(S.curDist+'_'+S.curType).replace(/\s+/g,'_')+'_admin.xlsx');toast('Descargando...','var(--accent-green)');
 };
 
+function vcDone(r){return !!(r&&(r.done||r.estado==='corregido'));}
 function updateProgress(){
-  var types={};
-  S.excelFiles.forEach(function(f){var key=(f.distrito||'Sin Distrito')+'|||'+(f.type||'Sin Categoria');if(!types[key])types[key]={distrito:f.distrito||'Sin Distrito',type:f.type||'Sin Categoria',total:0,done:0,startDate:f.date,lastDone:null,reviewers:new Set()};if(f.date<types[key].startDate)types[key].startDate=f.date;types[key].total+=(f.rowCount!=null?f.rowCount:(f.rows?f.rows.length:0));});
-  Object.keys(S.reviews).forEach(function(rk){var rev=S.reviews[rk];if(!rev||!rev.done)return;var key=(rev.distrito||'Sin Distrito')+'|||'+(rev.tipo||rev.type||'Sin Categoria');var t=types[key];if(!t)return;t.done++;if(!t.lastDone||rev.doneDate>t.lastDone)t.lastDone=rev.doneDate;if(rev.doneBy)t.reviewers.add(rev.doneBy);});
+  var types={},avBy={};
+  Object.keys(S.avance||{}).forEach(function(id){var a=S.avance[id];if(a)avBy[(a.d||'')+'|||'+(a.v||'')]=a;});
+  S.excelFiles.forEach(function(f){var key=(f.distrito||'Sin Distrito')+'|||'+(f.type||'Sin Categoria');var t0=types[key];
+    if(!t0)t0=types[key]={distrito:f.distrito||'Sin Distrito',type:f.type||'Sin Categoria',total:0,done:0,startDate:f.date,lastDone:null,reviewers:new Set(),_f:f};
+    if(f.date<t0.startDate)t0.startDate=f.date;if(String(f.date||'')>String(t0._f.date||''))t0._f=f;});
+  /* Total y hechas: de `avance` (lo calcula la vista: CONFORME fuera, «No aplica» fuera del total); sin avance, de las revisiones. */
+  Object.keys(types).forEach(function(k){var t0=types[k],f=t0._f,a=avBy[(t0.distrito)+'|||'+(t0.type)];
+    if(a){t0.total=Math.max(0,(+a.t||0)-(+a.n||0));t0.done=+a.c||0;}
+    else t0.total=(f.rowsRev!=null?f.rowsRev:(f.rowCount!=null?f.rowCount:(f.rows?f.rows.length:0)));
+    t0._av=!!a;});
+  Object.keys(S.reviews).forEach(function(rk){var rev=S.reviews[rk];if(!vcDone(rev))return;var key=(rev.distrito||'Sin Distrito')+'|||'+(rev.validador||rev.tipo||rev.type||'Sin Categoria');var t0=types[key];if(!t0)return;if(!t0._av)t0.done++;
+    var dd=rev.doneDate||(rev.at&&rev.at.toDate?rev.at.toDate().toISOString():null);if(dd&&(!t0.lastDone||dd>t0.lastDone))t0.lastDone=dd;var who=rev.doneBy||rev.ses;if(who)t0.reviewers.add(who);});
   Object.keys(types).forEach(function(k){if(types[k].done>types[k].total)types[k].done=types[k].total;});
   var ks=Object.keys(types),tA=ks.reduce(function(s,t){return s+types[t].total;},0),dA=ks.reduce(function(s,t){return s+types[t].done;},0),pA=tA?Math.round(dA/tA*100):0,tc=Object.values(S.reviews).filter(function(r){return r.comment&&r.comment.trim();}).length;
   document.getElementById('d-excel').textContent=S.excelFiles.length;document.getElementById('d-revisadas').textContent=dA;document.getElementById('d-comentarios').textContent=tc;document.getElementById('d-pct').textContent=pA+'%';document.getElementById('badge-pct').textContent=pA+'%';
   var nd={};S.excelFiles.forEach(function(f){nd[f.distrito||'?']=true;});
   var se=document.getElementById('d-excel-sub');if(se)se.textContent=tA.toLocaleString('es')+' filas en '+Object.keys(nd).length+' distrito'+(Object.keys(nd).length===1?'':'s');
   var sr=document.getElementById('d-rev-sub');if(sr)sr.textContent=(tA-dA).toLocaleString('es')+' pendientes';
-  var cp=Object.values(S.reviews).filter(function(r){return r.comment&&r.comment.trim()&&!r.done;}).length;
+  var cp=Object.values(S.reviews).filter(function(r){return r.comment&&r.comment.trim()&&!vcDone(r);}).length;
   var sc=document.getElementById('d-com-sub');if(sc)sc.textContent=cp?cp+' en filas pendientes':'todos en filas revisadas';
   var pb=document.getElementById('d-pct-bar');if(pb)pb.style.width=pA+'%';
   if(window._pd!=null&&dA>window._pd){var cr=document.getElementById('card-rev');if(cr){cr.classList.remove('flash');void cr.offsetWidth;cr.classList.add('flash');}}
@@ -1154,8 +1171,8 @@ function renderComments(){
   var items=Object.entries(S.reviews).filter(function(e){return e[1].comment&&e[1].comment.trim();}).map(function(e){return{id:e[0],rev:e[1]};});
   items=items.filter(function(c){
     if(fD&&(c.rev.distrito||'')!==fD)return false;
-    if(fS==='done'&&!c.rev.done)return false;
-    if(fS==='pend'&&c.rev.done)return false;
+    if(fS==='done'&&!vcDone(c.rev))return false;
+    if(fS==='pend'&&vcDone(c.rev))return false;
     if(q&&(c.rev.comment+' '+c.id+' '+(c.rev.doneBy||'')).toLowerCase().indexOf(q)<0)return false;
     return true;
   });
@@ -1167,8 +1184,8 @@ function renderComments(){
     var r=c.rev;
     var rowRef=c.id;var sep=rowRef.indexOf('__');if(sep>=0)rowRef=rowRef.slice(sep+2);
     if(rowRef.length>48)rowRef=rowRef.slice(0,48)+'&#8230;';
-    var item=document.createElement('div');item.className='comment-item'+(r.done?' done':'');
-    item.innerHTML='<div class="comment-meta">'+eh(r.distrito||'-')+' &middot; '+eh(r.tipo||r.type||'-')+' &middot; '+(r.commentDate?new Date(r.commentDate).toLocaleString('es'):'-')+(r.doneBy?' &middot; por <span style="color:var(--accent-cyan);">'+eh(r.doneBy)+'</span>':'')+(r.done?' &middot; <span style="color:var(--accent-green);">&#10003; Revisado</span>':' &middot; <span style="color:var(--accent-amber);">&#9675; Pendiente</span>')+'</div>'+
+    var item=document.createElement('div');item.className='comment-item'+(vcDone(r)?' done':'');
+    item.innerHTML='<div class="comment-meta">'+eh(r.distrito||'-')+' &middot; '+eh(r.validador||r.tipo||r.type||'-')+' &middot; '+(r.commentDate?new Date(r.commentDate).toLocaleString('es'):'-')+(r.doneBy?' &middot; por <span style="color:var(--accent-cyan);">'+eh(r.doneBy)+'</span>':'')+(vcDone(r)?' &middot; <span style="color:var(--accent-green);">&#10003; Revisado</span>':' &middot; <span style="color:var(--accent-amber);">&#9675; Pendiente</span>')+'</div>'+
       '<div class="comment-text">'+eh(r.comment)+'</div>'+
       '<div class="cmt-src" title="Procedencia: clave de la fila">&#9656; Fila: '+rowRef+'</div>';
     var acts=document.createElement('div');acts.className='cmt-actions';

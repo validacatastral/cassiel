@@ -197,6 +197,14 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
+    // ---------- sicunAvance (copia del avance del Informe SICUN para revisores) ----------
+    // Solo conteos por poligono/validador. La escribe el panel (admin); la leen
+    // revisores y staff desde sicun.html. Sin URL, clave ni datos de predios.
+    match /sicunAvance/{docId} {
+      allow read: if isMember();
+      allow write: if isAdmin();
+    }
+
     // ---------- todo lo demas: denegado ----------
     match /{document=**} {
       allow read, write: if false;

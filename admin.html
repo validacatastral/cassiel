@@ -1360,7 +1360,7 @@ window.closeNav=function(){document.body.classList.remove('nav-open');};
 window.copyPublicLink=function(){var url='https://validacatastral.github.io/validacatastral/';/* link publico fijo: el admin vive en otro repo */navigator.clipboard.writeText(url).then(function(){toast('Link publico copiado','var(--accent-green)');}).catch(function(){toast('Link: '+url,'var(--accent-blue)');});};
 function makeKey(tk,row,headers){var key=(tk+'__'+headers.slice(0,3).map(function(h){return String(row[h]!=null?row[h]:'');}).join('_')).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,100);return key||('row_'+Math.random().toString(36).slice(2));}
 /* ===== Informe SICUN · conexión privada con Apps Script (solo admin) ===== */
-var SICUN={url:'',key:'',timer:null};
+var SICUN={url:'',key:'',timer:null,sig:null};
 var SICUN_RE=/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/;
 function sicunMsg(m,err){var el=document.getElementById('sicunCfgMsg');if(el){el.textContent=m;el.style.color=err?'var(--accent-red)':'var(--accent-green)';}}
 async function sicunLeerCfg(){
@@ -1381,6 +1381,26 @@ async function sicunFetch(u,k){
     try{j=JSON.parse(tx);}catch(e){return{ok:false,error:'Respuesta no v\u00e1lida. En la implementaci\u00f3n del script, \u00abQui\u00e9n tiene acceso\u00bb debe ser \u00abCualquier usuario\u00bb.'};}
     return j;
   }catch(e){return{ok:false,error:'No se pudo conectar ('+e.message+'). Revisa la URL y el acceso de la implementaci\u00f3n.'};}
+}
+/* Copia para revisores: solo conteos (sin URL, clave, link al Word ni datos de predios).
+   Se escribe en sicunAvance/resumen unicamente si cambio, para no gastar escrituras. */
+function sicunNum(o){o=o||{};return{filas:+o.filas||0,rev:+o.rev||0,ap:+o.ap||0,na:+o.na||0,oc:+o.oc||0};}
+function sicunLimpio(pols){
+  return(Array.isArray(pols)?pols:[]).map(function(p){
+    p=p||{};
+    return{poligono:String(p.poligono||''),leido:String(p.leido||''),total:sicunNum(p.total),validadores:(Array.isArray(p.validadores)?p.validadores:[]).map(function(v){v=v||{};var x=sicunNum(v);x.nombre=String(v.nombre||'');x.sinCol=!!v.sinCol;return x;})};
+  });
+}
+async function sicunPublicar(generado,pols){
+  if(CR!=='admin')return;
+  var meta=document.getElementById('sicunMeta');
+  try{
+    var limpio=sicunLimpio(pols),sig=JSON.stringify(limpio);
+    if(SICUN.sig===null){var sn=await getDoc(doc(db,'sicunAvance','resumen'));SICUN.sig=sn.exists()?JSON.stringify(sicunLimpio(sn.data().poligonos)):'';}
+    if(sig===SICUN.sig)return;
+    await setDoc(doc(db,'sicunAvance','resumen'),{generado:String(generado||''),poligonos:limpio,at:serverTimestamp()});
+    SICUN.sig=sig;
+  }catch(e){console.warn('sicun publicar',e);if(meta)meta.textContent+=' \u00b7 no se public\u00f3 a revisores (\u00bfreglas publicadas?)';}
 }
 window.sicunGuardar=async function(){
   var u=(document.getElementById('sicunUrl').value||'').trim(),k=(document.getElementById('sicunKey').value||'').trim();
@@ -1404,6 +1424,7 @@ window.sicunCargar=async function(manual){
   if(meta)meta.textContent='\u00b7 le\u00eddo '+new Date().toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'});
   var pols=j.poligonos||[];
   if(!pols.length){body.innerHTML='<div class="empty-state">El script a\u00fan no tiene avance. Usa \u00abActualizar todos\u00bb en EQUIPO REVISION.</div>';return;}
+  sicunPublicar(j.generado,pols);
   var colors=['#00d4ff','#00ff88','#8b5cf6','#ffaa00','#ff3860','#0e7aff'],R=42,C=2*Math.PI*R;
   function card(nombre,st,idx){
     var pct=st.filas?Math.round(st.rev/st.filas*100):0,color=st.sinCol?'#ff3860':colors[idx%colors.length],offset=C-(pct/100)*C;

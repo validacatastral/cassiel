@@ -191,6 +191,22 @@ service cloud.firestore {
         && request.resource.data.text.size() <= 20000;
     }
 
+    // ---------- marcas_vias (visor de vias VAL_VIAS) ----------
+    // El visor entra con sesion anonima: por eso usa isSignedIn() y no isMember().
+    match /marcas_vias/{k} {
+      allow read: if true;
+      allow create, update: if isSignedIn()
+        && k.size() <= 320
+        && request.resource.data.keys().hasOnly(['estado', 'obs', 'revisor', 'fecha', 'pol', 'crc'])
+        && request.resource.data.estado in ['pendiente', 'atendido', 'falso_error']
+        && request.resource.data.obs is string && request.resource.data.obs.size() <= 1000
+        && request.resource.data.revisor is string && request.resource.data.revisor.size() <= 60
+        && request.resource.data.fecha is string && request.resource.data.fecha.size() <= 40
+        && request.resource.data.pol is string && request.resource.data.pol.size() <= 20
+        && request.resource.data.crc is string && request.resource.data.crc.size() <= 40;
+      allow delete: if isStaff();
+    }
+
     // ---------- privado (conexion Informe SICUN: URL + clave del Apps Script) ----------
     // Solo admin: la URL y la clave NO van en el codigo (el repo es publico).
     match /privado/{docId} {

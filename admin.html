@@ -425,6 +425,10 @@ html[data-atheme="claudelight"] .stat-card,html[data-atheme="claudelight"] .pane
       <div class="view" id="view-progreso">
         <div class="page-header"><h1>&#11096; <span>Progreso</span></h1><p>Por Distrito y Categor&#237;a</p></div>
         <div id="progressByDistrito"><div class="empty-state">Cargando...</div></div>
+        <div class="panel-card master-only" id="sicunPanel">
+          <div class="panel-title" style="color:var(--accent-purple);display:flex;align-items:center;gap:8px;flex-wrap:wrap;">&#9673; Informe SICUN <span id="sicunMeta" style="font-family:var(--font-mono);font-weight:400;font-size:10px;color:var(--text-dim);letter-spacing:0.5px;">&mdash;</span><button class="btn btn-primary" style="margin-left:auto;padding:4px 10px;font-size:11px;" onclick="sicunCargar(true)">&#8635; Actualizar</button></div>
+          <div id="sicunBody"><div class="empty-state">Configura la conexi&#243;n en &#9881; Configuraci&#243;n &rarr; Informe SICUN.</div></div>
+        </div>
         <div class="panel-card">
           <div class="panel-title">&#128172; Comentarios del p&#250;blico <span class="nav-badge" id="cmtCount">0</span></div>
           <div class="filters-row" style="margin-bottom:10px;">
@@ -500,6 +504,16 @@ html[data-atheme="claudelight"] .stat-card,html[data-atheme="claudelight"] .pane
           </div>
           <div style="font-family:var(--font-mono);font-size:9px;color:var(--text-dim);margin-bottom:10px;letter-spacing:0.5px;">SUGERENCIA: sube el archivo a Google Drive (o similar) y pega aqu&#237; el enlace. No subas archivos pesados a Firebase.</div>
           <div class="config-list" id="recursosLista"></div>
+        </div>
+        <div class="panel-card master-only">
+          <div class="panel-title">&#128274; Informe SICUN <span style="font-family:var(--font-body);font-weight:400;font-size:10px;color:var(--text-dim);letter-spacing:0;text-transform:none;">&middot; conexi&#243;n privada con el script de EQUIPO REVISION &middot; solo admin</span></div>
+          <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+            <input type="url" id="sicunUrl" placeholder="https://script.google.com/macros/s/.../exec" style="flex:2;min-width:220px;" autocomplete="off">
+            <input type="password" id="sicunKey" placeholder="Clave API" style="flex:1;min-width:140px;" autocomplete="off">
+            <button class="btn btn-success" onclick="sicunGuardar()">&#128190; Guardar</button>
+            <button class="btn btn-primary" onclick="sicunProbar()">&#9889; Probar</button>
+          </div>
+          <div id="sicunCfgMsg" style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim);letter-spacing:0.5px;">La URL y la clave se guardan en Firestore (privado/sicun), no en el c&#243;digo.</div>
         </div>
       </div>
       <div class="view" id="view-notas">
@@ -711,6 +725,7 @@ function startListeners(){
   setupNotes();
   setupTablon();
   if(CR==='admin')setupTeamNotes();
+  if(CR==='admin')sicunLeerCfg();
 }
 async function logH(t,m){try{await addDoc(collection(db,'historial'),{type:t,msg:m,user:CU,role:CR,date:new Date().toISOString()});}catch(e){}}
 
@@ -1344,6 +1359,89 @@ window.toggleNav=function(){document.body.classList.toggle('nav-open');};
 window.closeNav=function(){document.body.classList.remove('nav-open');};
 window.copyPublicLink=function(){var url='https://validacatastral.github.io/validacatastral/';/* link publico fijo: el admin vive en otro repo */navigator.clipboard.writeText(url).then(function(){toast('Link publico copiado','var(--accent-green)');}).catch(function(){toast('Link: '+url,'var(--accent-blue)');});};
 function makeKey(tk,row,headers){var key=(tk+'__'+headers.slice(0,3).map(function(h){return String(row[h]!=null?row[h]:'');}).join('_')).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,100);return key||('row_'+Math.random().toString(36).slice(2));}
+/* ===== Informe SICUN · conexión privada con Apps Script (solo admin) ===== */
+var SICUN={url:'',key:'',timer:null,sig:null};
+var SICUN_RE=/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/;
+function sicunMsg(m,err){var el=document.getElementById('sicunCfgMsg');if(el){el.textContent=m;el.style.color=err?'var(--accent-red)':'var(--accent-green)';}}
+async function sicunLeerCfg(){
+  try{
+    var sn=await getDoc(doc(db,'privado','sicun'));
+    if(sn.exists()){var d=sn.data();SICUN.url=d.url||'';SICUN.key=d.key||'';}
+    var u=document.getElementById('sicunUrl'),k=document.getElementById('sicunKey');if(u)u.value=SICUN.url;if(k)k.value=SICUN.key;
+  }catch(e){console.warn('sicun cfg',e);sicunMsg('No se pudo leer privado/sicun. Revisa que las reglas de Firestore est\u00e9n publicadas.',true);}
+  window.sicunCargar(false);
+  if(!SICUN.timer)SICUN.timer=setInterval(function(){var v=document.getElementById('view-progreso');if(v&&v.classList.contains('active'))window.sicunCargar(false);},300000);
+}
+async function sicunFetch(u,k){
+  if(!u||!k)return{ok:false,error:'Falta la URL o la clave.'};
+  if(!SICUN_RE.test(u))return{ok:false,error:'La URL debe ser https://script.google.com/macros/s/.../exec'};
+  try{
+    var res=await fetch(u+'?api=avance&k='+encodeURIComponent(k),{method:'GET',redirect:'follow',cache:'no-store'});
+    var tx=await res.text(),j;
+    try{j=JSON.parse(tx);}catch(e){return{ok:false,error:'Respuesta no v\u00e1lida. En la implementaci\u00f3n del script, \u00abQui\u00e9n tiene acceso\u00bb debe ser \u00abCualquier usuario\u00bb.'};}
+    return j;
+  }catch(e){return{ok:false,error:'No se pudo conectar ('+e.message+'). Revisa la URL y el acceso de la implementaci\u00f3n.'};}
+}
+/* Copia para revisores: solo conteos (sin URL, clave, link al Word ni datos de predios).
+   Se escribe en sicunAvance/resumen unicamente si cambio, para no gastar escrituras. */
+function sicunNum(o){o=o||{};return{filas:+o.filas||0,rev:+o.rev||0,ap:+o.ap||0,na:+o.na||0,oc:+o.oc||0};}
+function sicunLimpio(pols){
+  return(Array.isArray(pols)?pols:[]).map(function(p){
+    p=p||{};
+    return{poligono:String(p.poligono||''),leido:String(p.leido||''),total:sicunNum(p.total),validadores:(Array.isArray(p.validadores)?p.validadores:[]).map(function(v){v=v||{};var x=sicunNum(v);x.nombre=String(v.nombre||'');x.sinCol=!!v.sinCol;return x;})};
+  });
+}
+async function sicunPublicar(generado,pols){
+  if(CR!=='admin')return;
+  var meta=document.getElementById('sicunMeta');
+  try{
+    var limpio=sicunLimpio(pols),sig=JSON.stringify(limpio);
+    if(SICUN.sig===null){var sn=await getDoc(doc(db,'sicunAvance','resumen'));SICUN.sig=sn.exists()?JSON.stringify(sicunLimpio(sn.data().poligonos)):'';}
+    if(sig===SICUN.sig)return;
+    await setDoc(doc(db,'sicunAvance','resumen'),{generado:String(generado||''),poligonos:limpio,at:serverTimestamp()});
+    SICUN.sig=sig;
+  }catch(e){console.warn('sicun publicar',e);if(meta)meta.textContent+=' \u00b7 no se public\u00f3 a revisores (\u00bfreglas publicadas?)';}
+}
+window.sicunGuardar=async function(){
+  var u=(document.getElementById('sicunUrl').value||'').trim(),k=(document.getElementById('sicunKey').value||'').trim();
+  if(u&&!SICUN_RE.test(u)){sicunMsg('La URL debe ser https://script.google.com/macros/s/.../exec',true);return;}
+  try{
+    await setDoc(doc(db,'privado','sicun'),{url:u,key:k,updatedAt:new Date().toISOString()});
+    SICUN.url=u;SICUN.key=k;sicunMsg('Guardado \u2713');toast('Conexi\u00f3n Informe SICUN guardada','var(--accent-green)');window.sicunCargar(true);
+  }catch(e){sicunMsg('Error al guardar: '+e.message+' (\u00bfpublicaste las reglas de Firestore?)',true);}
+};
+window.sicunProbar=async function(){
+  sicunMsg('Probando...',false);
+  var j=await sicunFetch((document.getElementById('sicunUrl').value||'').trim(),(document.getElementById('sicunKey').value||'').trim());
+  if(j&&j.ok)sicunMsg('Conexi\u00f3n OK \u00b7 '+(j.poligonos||[]).length+' pol\u00edgonos',false);else sicunMsg('Error: '+((j&&j.error)||'desconocido'),true);
+};
+window.sicunCargar=async function(manual){
+  var body=document.getElementById('sicunBody'),meta=document.getElementById('sicunMeta');if(!body)return;
+  if(!SICUN.url||!SICUN.key){body.innerHTML='<div class="empty-state">Configura la URL y la clave en &#9881; Configuraci&#243;n &rarr; Informe SICUN.</div>';return;}
+  if(manual)body.innerHTML='<div class="empty-state">Cargando...</div>';
+  var j=await sicunFetch(SICUN.url,SICUN.key);
+  if(!j||!j.ok){body.innerHTML='<div class="empty-state" style="color:var(--accent-red);">'+eh((j&&j.error)||'Error')+'</div>';return;}
+  if(meta)meta.textContent='\u00b7 le\u00eddo '+new Date().toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'});
+  var pols=j.poligonos||[];
+  if(!pols.length){body.innerHTML='<div class="empty-state">El script a\u00fan no tiene avance. Usa \u00abActualizar todos\u00bb en EQUIPO REVISION.</div>';return;}
+  sicunPublicar(j.generado,pols);
+  var colors=['#00d4ff','#00ff88','#8b5cf6','#ffaa00','#ff3860','#0e7aff'],R=42,C=2*Math.PI*R;
+  function card(nombre,st,idx){
+    var pct=st.filas?Math.round(st.rev/st.filas*100):0,color=st.sinCol?'#ff3860':colors[idx%colors.length],offset=C-(pct/100)*C;
+    return'<div class="progress-card"><div class="circle-wrap"><svg viewBox="0 0 100 100"><circle class="circle-bg" cx="50" cy="50" r="'+R+'"/><circle class="circle-fg" cx="50" cy="50" r="'+R+'" stroke="'+color+'" stroke-dasharray="'+C+'" data-offset="'+offset+'" style="stroke-dashoffset:'+C+'"/></svg><div class="circle-center"><div class="circle-pct" style="color:'+color+'">'+(st.sinCol?'!':pct+'%')+'</div><div class="circle-lbl">'+(st.sinCol?'SIN COLUMNA':'REVISADO')+'</div></div></div>'+
+    '<div class="progress-info"><div class="progress-type">'+eh(nombre)+'</div><div class="progress-counts">'+(+st.rev||0)+' / '+(+st.filas||0)+' filas</div><div class="bar-wrap"><div class="bar-fill" data-pct="'+pct+'" style="width:0%;background:'+color+';"></div></div>'+
+    '<div class="time-row"><div><span style="color:var(--text-dim);font-size:8px;">APLICA</span><br><span class="time-val">'+(+st.ap||0)+'</span></div><div style="text-align:center;"><span style="color:var(--text-dim);font-size:8px;">NO APLICA</span><br><span class="time-val">'+(+st.na||0)+'</span></div><div style="text-align:right;"><span style="color:var(--text-dim);font-size:8px;">OTRO CAMBIO</span><br><span class="time-val">'+(+st.oc||0)+'</span></div></div></div></div>';
+  }
+  body.innerHTML=pols.map(function(p){
+    var t=p.total||{},pct=t.filas?Math.round(t.rev/t.filas*100):0;
+    var link=(p.doc&&/^https:\/\/docs\.google\.com\//.test(p.doc))?' <a href="'+eh(p.doc)+'" target="_blank" rel="noopener" style="color:var(--accent-blue);font-size:11px;">Abrir informe &#8599;</a>':'';
+    return'<div style="margin:6px 0 14px;"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;"><span style="font-family:var(--font-mono);font-weight:700;color:var(--text-prime);">'+eh(p.poligono)+'</span>'+
+      '<span style="flex:1;min-width:120px;max-width:260px;" class="bar-wrap"><span class="bar-fill" data-pct="'+pct+'" style="display:block;height:100%;width:0%;background:'+(pct>=100?'#00ff88':(pct>=30?'#ffaa00':'#ff3860'))+';"></span></span>'+
+      '<span style="font-family:var(--font-mono);font-size:11px;color:var(--text-dim);">'+pct+'% &middot; '+(+t.rev||0)+'/'+(+t.filas||0)+' &middot; le\u00eddo '+eh(p.leido||'\u2014')+'</span>'+link+'</div>'+
+      '<div class="progress-grid">'+(p.validadores||[]).map(function(v,i){return card(v.nombre,v,i);}).join('')+'</div></div>';
+  }).join('');
+  requestAnimationFrame(function(){requestAnimationFrame(function(){body.querySelectorAll('.circle-fg').forEach(function(el){el.style.strokeDashoffset=el.getAttribute('data-offset');});body.querySelectorAll('.bar-fill').forEach(function(el){el.style.width=el.getAttribute('data-pct')+'%';});});});
+};
 function eh(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 window.toast=function(msg,color){var d=document.createElement('div');d.className='toast-msg';d.style.borderColor=color||'var(--accent-blue)';d.textContent=msg;document.getElementById('toast').appendChild(d);setTimeout(function(){d.remove();},4000);};
 </script>

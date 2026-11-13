@@ -191,6 +191,20 @@ service cloud.firestore {
         && request.resource.data.text.size() <= 20000;
     }
 
+    // ---------- privado (conexion Informe SICUN: URL + clave del Apps Script) ----------
+    // Solo admin: la URL y la clave NO van en el codigo (el repo es publico).
+    match /privado/{docId} {
+      allow read, write: if isAdmin();
+    }
+
+    // ---------- sicunAvance (copia del avance del Informe SICUN para revisores) ----------
+    // Solo conteos por poligono/validador. La escribe el panel (admin); la leen
+    // revisores y staff desde sicun.html. Sin URL, clave ni datos de predios.
+    match /sicunAvance/{docId} {
+      allow read: if isMember();
+      allow write: if isAdmin();
+    }
+
     // ---------- todo lo demas: denegado ----------
     match /{document=**} {
       allow read, write: if false;

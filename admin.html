@@ -1388,7 +1388,7 @@ function sicunNum(o){o=o||{};return{filas:+o.filas||0,rev:+o.rev||0,ap:+o.ap||0,
 function sicunLimpio(pols){
   return(Array.isArray(pols)?pols:[]).map(function(p){
     p=p||{};
-    return{poligono:String(p.poligono||''),leido:String(p.leido||''),total:sicunNum(p.total),validadores:(Array.isArray(p.validadores)?p.validadores:[]).map(function(v){v=v||{};var x=sicunNum(v);x.nombre=String(v.nombre||'');x.sinCol=!!v.sinCol;return x;})};
+    return{poligono:String(p.poligono||''),leido:String(p.leido||''),distrito:String(p.distrito||''),total:sicunNum(p.total),validadores:(Array.isArray(p.validadores)?p.validadores:[]).map(function(v){v=v||{};var x=sicunNum(v);x.nombre=String(v.nombre||'');x.sinCol=!!v.sinCol;return x;})};
   });
 }
 async function sicunPublicar(generado,pols){

@@ -339,8 +339,8 @@ html[data-atheme="claudelight"] .stat-card,html[data-atheme="claudelight"] .pane
       <div class="login-sub">// ACCESO SEGURO //</div>
     </div>
     <div class="alert-err" id="loginError" style="background:rgba(232,112,112,0.08);border:1px solid rgba(232,112,112,0.3);color:var(--accent-red);">&#9888; Credenciales inv&#225;lidas</div>
-    <div class="form-group"><label>Usuario</label><input type="text" id="loginUser" placeholder="usuario"/></div>
-    <div class="form-group"><label>Contrase&#241;a</label><input type="password" id="loginPass" placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;"/></div>
+    <div class="form-group"><label>Usuario</label><input type="text" id="loginUser" placeholder="usuario" autocomplete="username"/></div>
+    <div class="form-group"><label>Contrase&#241;a</label><input type="password" id="loginPass" placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;" autocomplete="current-password"/></div>
     <button class="login-btn" onclick="doLogin()">INGRESAR</button>
   </div>
 </div>
@@ -600,7 +600,7 @@ html[data-atheme="claudelight"] .stat-card,html[data-atheme="claudelight"] .pane
 <script type="module">
 import{initializeApp,deleteApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import{getFirestore,collection,addDoc,deleteDoc,doc,onSnapshot,query,orderBy,setDoc,getDocs,getDoc,updateDoc,serverTimestamp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import{getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged,createUserWithEmailAndPassword}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import{getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged,createUserWithEmailAndPassword,setPersistence,browserSessionPersistence,reauthenticateWithCredential,EmailAuthProvider}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import{initializeAppCheck,ReCaptchaV3Provider}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app-check.js";
 const fCfg={apiKey:"AIzaSyBrTT-bK_UTZLSg6BVMiVviIQmAYFbGo9Q",authDomain:"dataforge-mio.firebaseapp.com",projectId:"dataforge-mio",storageBucket:"dataforge-mio.firebasestorage.app",messagingSenderId:"687282166437",appId:"1:687282166437:web:83772a6d56c52185784b4c"};
 const app=initializeApp(fCfg);
@@ -670,18 +670,30 @@ window.addRecurso=function(){
 window.removeRecurso=function(i){if(!S.recursos[i])return;if(!confirm('Eliminar el recurso "'+(S.recursos[i].nombre||S.recursos[i].url)+'"?'))return;var nm=S.recursos[i].nombre||S.recursos[i].url;S.recursos.splice(i,1);saveCfg();logH('CONFIG_REC','Elimino recurso: '+String(nm).slice(0,60));};
 
 window.addDistrito=function(){var v=document.getElementById('newDistrito').value.trim();if(!v||S.distritos.indexOf(v)>=0){toast(v?'Ya existe':'Escribe un nombre','var(--accent-amber)');return;}S.distritos.push(v);document.getElementById('newDistrito').value='';saveCfg();toast('Distrito agregado: '+v,'var(--accent-green)');};
-window.removeDistrito=function(d){if(!confirm('Eliminar distrito "'+d+'"?'))return;S.distritos=S.distritos.filter(function(x){return x!==d;});saveCfg();};
+window.removeDistrito=async function(d){if(!confirm('Eliminar distrito "'+d+'"?'))return;if(!(await vcReauth()))return;S.distritos=S.distritos.filter(function(x){return x!==d;});saveCfg();};
 window.addCategoria=function(){var v=document.getElementById('newCategoria').value.trim();if(!v||S.categorias.indexOf(v)>=0){toast(v?'Ya existe':'Escribe un nombre','var(--accent-amber)');return;}S.categorias.push(v);document.getElementById('newCategoria').value='';saveCfg();toast('Categoria agregada: '+v,'var(--accent-green)');};
-window.removeCategoria=function(c){if(!confirm('Eliminar categoria "'+c+'"?'))return;S.categorias=S.categorias.filter(function(x){return x!==c;});saveCfg();};
+window.removeCategoria=async function(c){if(!confirm('Eliminar categoria "'+c+'"?'))return;if(!(await vcReauth()))return;S.categorias=S.categorias.filter(function(x){return x!==c;});saveCfg();};
 
 var _loggingIn=false;
+// Marca de "login manual en esta pestana": sin ella, una sesion restaurada sola se cierra.
+var VC_LOGIN_FLAG='vc-admin-login-manual';
+function vcFlagGet(){try{return sessionStorage.getItem(VC_LOGIN_FLAG)==='1';}catch(e){return false;}}
+function vcFlagSet(on){try{if(on)sessionStorage.setItem(VC_LOGIN_FLAG,'1');else sessionStorage.removeItem(VC_LOGIN_FLAG);}catch(e){}}
+var _loginBusy=false;
 window.doLogin=async function(){
+  if(_loginBusy)return;
   var u=document.getElementById('loginUser').value.trim().toLowerCase();
   var p=document.getElementById('loginPass').value;
   if(!u||!p){showErr('Completa usuario y contrasena');return;}
   var email=u.indexOf('@')>=0?u:(u+MAIL);
-  try{await signInWithEmailAndPassword(auth,email,p);}
-  catch(e){showErr('Credenciales invalidas');}
+  _loginBusy=true;
+  try{
+    await setPersistence(auth,browserSessionPersistence);
+    vcFlagSet(true);
+    await signInWithEmailAndPassword(auth,email,p);
+  }
+  catch(e){vcFlagSet(false);showErr('Credenciales invalidas');}
+  finally{_loginBusy=false;}
 };
 async function afterLogin(user){
   if(_loggingIn||CU)return;_loggingIn=true;
@@ -694,12 +706,13 @@ async function afterLogin(user){
     applyRole(CR);startListeners();regP(CR);
     if(!window._pInt)window._pInt=setInterval(function(){regP(CR);},600000);
     logH('LOGIN','Inicio de sesion');toast('Bienvenido, '+CU,'var(--accent-green)');
+    vcIdleStart();
   }catch(err){showErr('Error al verificar permisos');try{await signOut(auth);}catch(e2){}}
   finally{_loggingIn=false;}
 }
-onAuthStateChanged(auth,function(user){if(user)afterLogin(user);});
+onAuthStateChanged(auth,function(user){if(!user)return;if(!vcFlagGet()){signOut(auth).catch(function(){});return;}afterLogin(user);});
 function showErr(m){var e=document.getElementById('loginError');e.textContent=m;e.style.display='block';setTimeout(function(){e.style.display='none';},3500);}
-document.addEventListener('keydown',function(e){if(e.key==='Enter'&&document.getElementById('loginScreen').style.display!=='none')window.doLogin();});
+document.addEventListener('keydown',function(e){if(e.key!=='Enter'||e.repeat||e.isComposing)return;if(document.getElementById('loginScreen').style.display==='none')return;var t=e.target&&e.target.id;if(t!=='loginUser'&&t!=='loginPass')return;e.preventDefault();window.doLogin();});
 
 function applyRole(r){
   document.getElementById('roleBadge').textContent=r.toUpperCase();
@@ -713,6 +726,84 @@ function applyRole(r){
   var tabSub=document.getElementById('tablonSub');if(tabSub&&!isAdm)tabSub.textContent='Publicado por el admin';
 }
 window.doLogout=async function(){rmP();try{await signOut(auth);}catch(e){}document.getElementById('loginScreen').style.display='flex';document.getElementById('appWrap').style.display='none';document.getElementById('loginPass').value='';CU=null;CR=null;};
+
+// ---- Cierre por inactividad (30 min, aviso 1 min antes) ----
+var VC_IDLE_MS=30*60*1000,VC_WARN_MS=60*1000;
+var _vcLastAct=Date.now(),_vcIdleInt=null,_vcWarnEl=null;
+function vcActivity(){if(_vcWarnEl&&_vcWarnEl.style.display!=='none')return;_vcLastAct=Date.now();}
+['click','keydown','scroll','wheel','touchstart'].forEach(function(ev){document.addEventListener(ev,vcActivity,{capture:true,passive:true});});
+function vcWarnBox(){
+  if(_vcWarnEl)return _vcWarnEl;
+  var ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.55);display:none;align-items:center;justify-content:center;padding:16px;';
+  var bx=document.createElement('div');
+  bx.style.cssText='background:var(--bg-panel);border:1px solid var(--accent-amber);border-radius:10px;padding:20px;max-width:360px;width:100%;color:var(--text-prime);font-family:var(--font-body);font-size:13px;text-align:center;';
+  var tx=document.createElement('div');tx.id='vcIdleTxt';tx.style.cssText='margin-bottom:14px;line-height:1.5;';
+  var bt=document.createElement('button');bt.className='btn btn-primary';bt.textContent='Seguir conectado';
+  bt.onclick=function(){ov.style.display='none';_vcLastAct=Date.now();};
+  bx.appendChild(tx);bx.appendChild(bt);ov.appendChild(bx);document.body.appendChild(ov);
+  _vcWarnEl=ov;return ov;
+}
+function vcIdleTick(){
+  if(!CU){if(_vcWarnEl)_vcWarnEl.style.display='none';return;}
+  var idle=Date.now()-_vcLastAct;
+  if(idle>=VC_IDLE_MS){
+    if(_vcWarnEl)_vcWarnEl.style.display='none';
+    vcReauthClose(false);_vcReauthUntil=0;vcFlagSet(false);
+    window.doLogout();toast('Sesion cerrada por inactividad','var(--accent-amber)');return;
+  }
+  if(idle>=VC_IDLE_MS-VC_WARN_MS){
+    var w=vcWarnBox();var sec=Math.max(0,Math.ceil((VC_IDLE_MS-idle)/1000));
+    document.getElementById('vcIdleTxt').textContent='Por inactividad, la sesion se cerrara en '+sec+' s.';
+    w.style.display='flex';
+  }
+}
+function vcIdleStart(){_vcLastAct=Date.now();_vcReauthUntil=0;if(!_vcIdleInt)_vcIdleInt=setInterval(vcIdleTick,1000);}
+
+// ---- Reautenticacion antes de acciones sensibles (valida 10 min) ----
+var VC_REAUTH_MS=10*60*1000,_vcReauthUntil=0,_vcReauthEl=null,_vcReauthDone=null;
+function vcReauthClose(ok){if(_vcReauthEl)_vcReauthEl.style.display='none';var f=_vcReauthDone;_vcReauthDone=null;if(f)f(ok);}
+function vcReauthBox(){
+  if(_vcReauthEl)return _vcReauthEl;
+  var ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,0.55);display:none;align-items:center;justify-content:center;padding:16px;';
+  var bx=document.createElement('div');
+  bx.style.cssText='background:var(--bg-panel);border:1px solid var(--accent-blue);border-radius:10px;padding:20px;max-width:360px;width:100%;color:var(--text-prime);font-family:var(--font-body);font-size:13px;';
+  var tt=document.createElement('div');tt.textContent='Confirma tu contraseña para continuar';tt.style.cssText='font-weight:600;margin-bottom:10px;';
+  var inp=document.createElement('input');inp.type='password';inp.id='vcReauthPass';inp.autocomplete='off';inp.placeholder='Contraseña';inp.style.cssText='width:100%;margin-bottom:8px;';
+  var er=document.createElement('div');er.id='vcReauthErr';er.style.cssText='color:var(--accent-red);font-size:11px;min-height:14px;margin-bottom:8px;';
+  var row=document.createElement('div');row.style.cssText='display:flex;gap:8px;justify-content:flex-end;';
+  var bc=document.createElement('button');bc.className='btn';bc.textContent='Cancelar';
+  var bo=document.createElement('button');bo.className='btn btn-primary';bo.textContent='Confirmar';
+  bc.onclick=function(){inp.value='';vcReauthClose(false);};
+  bo.onclick=vcReauthSubmit;
+  inp.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.isComposing){e.preventDefault();vcReauthSubmit();}else if(e.key==='Escape'){e.preventDefault();inp.value='';vcReauthClose(false);}});
+  row.appendChild(bc);row.appendChild(bo);bx.appendChild(tt);bx.appendChild(inp);bx.appendChild(er);bx.appendChild(row);ov.appendChild(bx);document.body.appendChild(ov);
+  _vcReauthEl=ov;return ov;
+}
+var _vcReauthBusy=false;
+async function vcReauthSubmit(){
+  if(_vcReauthBusy||!_vcReauthDone)return;
+  var inp=document.getElementById('vcReauthPass');var p=inp.value;inp.value='';
+  if(!p){document.getElementById('vcReauthErr').textContent='Escribe tu contraseña';return;}
+  var user=auth.currentUser;
+  if(!user||!user.email){vcReauthClose(false);toast('Sesion no valida: accion cancelada','var(--accent-red)');return;}
+  _vcReauthBusy=true;
+  try{
+    await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email,p));
+    _vcReauthUntil=Date.now()+VC_REAUTH_MS;vcReauthClose(true);
+  }catch(e){vcReauthClose(false);toast('Contraseña incorrecta: accion cancelada','var(--accent-red)');}
+  finally{_vcReauthBusy=false;}
+}
+function vcReauth(){
+  if(Date.now()<_vcReauthUntil&&auth.currentUser)return Promise.resolve(true);
+  if(_vcReauthDone)return Promise.resolve(false);
+  return new Promise(function(res){
+    var ov=vcReauthBox();_vcReauthDone=res;
+    document.getElementById('vcReauthErr').textContent='';document.getElementById('vcReauthPass').value='';
+    ov.style.display='flex';setTimeout(function(){var i=document.getElementById('vcReauthPass');if(i)i.focus();},0);
+  });
+}
 
 function startListeners(){
   if(window._lst)return;window._lst=true;
@@ -977,7 +1068,7 @@ window.uploadHtml=function(e){
   Array.from(e.target.files).forEach(function(file){var r=new FileReader();r.onload=async function(ev){try{var b64=btoa(unescape(encodeURIComponent(ev.target.result)));await addDoc(collection(db,'htmlFiles'),{name:file.name,distrito:dist,date:new Date().toISOString(),size:(file.size/1024).toFixed(1)+'KB',contentB64:b64,uploadedBy:CU});logH('HTML_UPLOAD','Subio HTML: '+file.name+' ('+dist+')');toast('Guardado: '+file.name,'var(--accent-purple)');}catch(err){toast('Error: '+err.message,'var(--accent-red)');}};r.readAsText(file,'UTF-8');});e.target.value='';
 };
 
-window.delExcel=async function(id,name){if(!confirm('Eliminar '+name+'?'))return;try{
+window.delExcel=async function(id,name){if(!confirm('Eliminar '+name+'?'))return;if(!(await vcReauth()))return;try{
   var f=S.excelFiles.find(function(x){return x.fireId===id;});
   var orphanKeys=[];
   if(f){try{
@@ -1004,6 +1095,7 @@ window.cleanOrphanReviews=async function(){
   var msg='Se encontraron '+orphans.length+' revisi\u00f3n(es) hu\u00e9rfana(s): no corresponden a ninguna fila vigente (sobran de archivos viejos o reemplazados).\n\nSe borrar\u00e1n de forma PERMANENTE. Esto corrige los porcentajes inflados.';
   if(nFail)msg+='\n\nNOTA: '+nFail+' categor\u00eda(s) no se pudieron leer y se OMITIERON por seguridad (no se toca ninguna de sus revisiones).';
   if(!confirm(msg+'\n\n\u00bfContinuar?'))return;
+  if(!(await vcReauth()))return;
   toast('Borrando '+orphans.length+' hu\u00e9rfanas...','var(--accent-blue)');
   var ok=0,err=0;for(const rk of orphans){try{await deleteDoc(doc(db,'reviews',rk));ok++;}catch(e){err++;}}
   logH('REVIEW_DELETE','Limpieza de hu\u00e9rfanas: '+ok+' borradas'+(err?(', '+err+' con error'):''));
@@ -1015,7 +1107,7 @@ window.editDesc=async function(id,cur,name){
   try{await updateDoc(doc(db,'excelFiles',id),{description:v});logH('EXCEL_EDIT','Edito descripcion de '+name+(v?(': '+v.slice(0,60)):' (la quito)'));toast(v?'Descripcion guardada':'Descripcion eliminada','var(--accent-green)');}
   catch(e){toast('Error: '+e.message,'var(--accent-red)');}
 };
-window.delHtml=async function(id,name){if(!confirm('Eliminar '+name+'?'))return;await deleteDoc(doc(db,'htmlFiles',id));logH('HTML_DELETE','Elimino HTML: '+name);toast('Eliminado','var(--accent-amber)');};
+window.delHtml=async function(id,name){if(!confirm('Eliminar '+name+'?'))return;if(!(await vcReauth()))return;await deleteDoc(doc(db,'htmlFiles',id));logH('HTML_DELETE','Elimino HTML: '+name);toast('Eliminado','var(--accent-amber)');};
 window.openHtml=function(b64,name){try{var html=decodeURIComponent(escape(atob(b64)));var blob=new Blob([html],{type:'text/html;charset=utf-8'});var url=URL.createObjectURL(blob);var w=window.open(url,'_blank');if(!w)toast('Permite pop-ups para: '+name,'var(--accent-amber)');setTimeout(function(){URL.revokeObjectURL(url);},5000);}catch(e){toast('Error: '+e.message,'var(--accent-red)');}};
 
 async function loadRowsFor(f){
@@ -1214,11 +1306,13 @@ function renderComments(){
 }
 window.clearComment=async function(key){
   if(!confirm('Borrar SOLO el comentario? La fila conserva su estado de revision.'))return;
+  if(!(await vcReauth()))return;
   try{await updateDoc(doc(db,'reviews',key),{comment:'',commentDate:new Date().toISOString()});toast('Comentario borrado','var(--accent-amber)');}
   catch(e){toast('Error: '+e.message,'var(--accent-red)');}
 };
 window.delReview=async function(key){
   if(!confirm('Eliminar la revision completa? La fila volvera a estado PENDIENTE y se perdera el comentario.'))return;
+  if(!(await vcReauth()))return;
   try{await deleteDoc(doc(db,'reviews',key));logH('REVIEW_DELETE','Elimino revision/comentario: '+key.slice(0,80));toast('Revision eliminada','var(--accent-amber)');}
   catch(e){toast('Error: '+e.message,'var(--accent-red)');}
 };
@@ -1317,7 +1411,7 @@ window.createUser=async function(){
     logH('USER_CREATE','Creo usuario: '+u+' ('+r+')');toast('Usuario '+u+' creado','var(--accent-green)');
   }catch(e){toast(e.code==='auth/email-already-in-use'?'Ese usuario ya existe':'Error: '+e.message,'var(--accent-red)');}
 };
-window.delUser=async function(uid){var ud=S.dbUsers[uid];var nm=ud?(ud.usuario||ud.email):uid;if(!confirm('Quitar acceso a '+nm+'?'))return;await deleteDoc(doc(db,'usuarios',uid));logH('USER_DELETE','Quito acceso: '+nm);toast('Acceso revocado: '+nm,'var(--accent-amber)');};
+window.delUser=async function(uid){var ud=S.dbUsers[uid];var nm=ud?(ud.usuario||ud.email):uid;if(!confirm('Quitar acceso a '+nm+'?'))return;if(!(await vcReauth()))return;await deleteDoc(doc(db,'usuarios',uid));logH('USER_DELETE','Quito acceso: '+nm);toast('Acceso revocado: '+nm,'var(--accent-amber)');};
 
 function renderUsers(){
   var el=document.getElementById('usersGrid');if(!el)return;
@@ -1407,6 +1501,7 @@ async function sicunPublicar(generado,pols){
 window.sicunGuardar=async function(){
   var u=(document.getElementById('sicunUrl').value||'').trim(),k=(document.getElementById('sicunKey').value||'').trim();
   if(u&&!SICUN_RE.test(u)){sicunMsg('La URL debe ser https://script.google.com/macros/s/.../exec',true);return;}
+  if(!(await vcReauth())){sicunMsg('No guardado: falta confirmar la contrase\u00f1a',true);return;}
   try{
     await setDoc(doc(db,'privado','sicun'),{url:u,key:k,updatedAt:new Date().toISOString()});
     SICUN.url=u;SICUN.key=k;sicunMsg('Guardado \u2713');toast('Conexi\u00f3n Informe SICUN guardada','var(--accent-green)');window.sicunCargar(true);
